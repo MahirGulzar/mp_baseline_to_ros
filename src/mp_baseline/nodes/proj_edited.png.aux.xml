@@ -1,0 +1,7 @@
+<PAMDataset>
+  <SRS></SRS>
+  <GeoTransform>  0.0917100000000000e+05,  2.0000000000000001e-01,  0.0000000000000000e+00,  0.0101060000000000e+06,  0.0000000000000000e+00, -2.0000000000000001e-01</GeoTransform>
+  <Metadata>
+    <MDI key="AREA_OR_POINT">Area</MDI>
+  </Metadata>
+</PAMDataset>

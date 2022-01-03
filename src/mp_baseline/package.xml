@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>mp_baseline</name>
+  <version>1.0.0</version>
+  <description>mp_baseline</description>
+  <license>NA</license>
+
+  <maintainer email="mahirgulzar343@gmail.com">Mahir Gulzar</maintainer>
+  <author email="mahirgulzar343@gmail.com">Mahir Gulzar</author>
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <!-- <depend>lidar_kf_contour_track</depend>
+  <depend>wf_simulator</depend>
+  <depend>aw_data</depend>
+  <depend>rviz</depend>
+  <depend>autoware_connector</depend> -->
+</package>

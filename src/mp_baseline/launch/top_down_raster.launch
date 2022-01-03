@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="file" doc="Path of bag file to load" />
+    <arg name="map_name" default="tartu_demo_route" />
+    <arg name="rviz" default="true" />
+    <arg name="carSelect" default="2" />
+    <arg name="enableRvizPoseSelect" default="false" doc="If false will get the car config file from logFolder" />
+    <arg name="following_method" default="stanley" />
+    <arg name="bag_rate" default="1.0" />
+    <arg name="bag_start" default="0.0" />
+    <arg name="use_radar" default="false" />
+    <arg name="use_lidar_center" default="true" />
+    <arg name="use_lidar_front" default="false" />
+
+    <node pkg="robot_state_publisher" type="robot_state_publisher" name="vehicle_platform_frames">
+        <remap from="robot_description" to="vehicle_platform_frames/robot_description" />
+        <param name="robot_description" textfile="$(find vehicle_platform)/config/platform.urdf" />
+    </node>
+
+    <include file="$(find op_sim_platform)/launch/autoware/mission_planning.launch">
+        <arg name="maxVelocity" value="5" />
+        <arg name="enableRvizInput" value="$(arg enableRvizPoseSelect)" />
+        <arg name="use_predictions" value="false" />
+        <arg name="init_params" value="false" />
+    </include>
+
+
+    <!-- ==================================== PARAMETERS LAUNCH ============================================ -->
+    <!-- OP platform params -->
+    <rosparam command="load" subst_value="true" file="$(find op_platform)/config/openplanner_motion_prediction.yaml" />
+
+    <!-- Sim OP platform params -->
+    <!-- <rosparam command="load" subst_value="true" file="$(find op_sim_platform)/config/openplanner.yaml" /> -->
+
+    <!-- OP platform params -->
+    <rosparam command="load" subst_value="true" file="$(find common_platform)/config/params/detection.yaml" />
+
+    <!-- ================================================================================================= -->
+
+
+
+    <!-- Get top down raster data -->
+    <!-- <node name="top_down_raster" pkg="mp_baseline" type="top_down_rasterizer.py" output="screen" /> -->
+
+
+    <!-- <group if="$(arg rviz)">
+        <node name="rviz" pkg="rviz" type="rviz" args="-d $(find mp_baseline)/config/mp_baseline.rviz" respawn="true"></node>
+    </group> -->
+
+
+    <!-- <include file="$(find lidar_point_pillars)/launch/lidar_point_pillars.launch">
+        <arg name="pfe_onnx_file" value="/home/mahir/Downloads/pfe.onnx" />
+        <arg name="rpn_onnx_file" value="/home/mahir/Downloads/rpn.onnx" />
+        <arg name="input_topic" value="/points_raw_center" />
+    </include> -->
+
+
+    <group ns="detection">
+        <group ns="lidar">
+            <include file="$(find common_platform)/launch/detection/tracking.launch">
+                <arg name="tracker_input_topic" value="/detection/lidar_detector/objects" />
+                <arg if="$(arg use_radar)" name="tracker_output_topic" value="/detection/lidar/tracked_objects" />
+                <arg unless="$(arg use_radar)" name="tracker_output_topic" value="/detection/lidar/objects" />
+            </include>
+        </group>
+    </group>
+</launch>
