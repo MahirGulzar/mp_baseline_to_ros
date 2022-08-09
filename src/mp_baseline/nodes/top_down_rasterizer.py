@@ -5,7 +5,8 @@ from __future__ import print_function
 from collections import defaultdict
 from geometry_msgs.msg import PoseStamped
 from autoware_msgs.msg import DetectedObjectArray
-from tf.transformations import euler_from_quaternion
+from tf.transformations import euler_from_quaternion, quaternion_from_euler
+from tf import TransformListener, LookupException, ExtrapolationException
 from PIL import Image
 import numpy as np
 import rospy
@@ -24,17 +25,29 @@ class TopDownRasterizer:
 
         # lane_map_path = rospy.get_param("map_path")
         dir_path = os.path.dirname(os.path.realpath(__file__))
-        self.lane_map = cv2.imread(os.path.join(dir_path, 'demo_route_large.png'), 0)
+        self.lane_map = cv2.imread(os.path.join(
+            dir_path, 'demo_route_large.png'), 0)
 
         # Binarize lane map
         self.lane_map[self.lane_map == -1] = 0
         self.lane_map[self.lane_map == 1] = 255
 
+        # Top left and top right pixels of vectormap translates to following map coordinates
         self.map_tl_x = rospy.get_param("map_tl_x", default=8926)
         self.map_tl_y = rospy.get_param("map_tl_y", default=10289)
+        # Rotation offset of vectormap
+        self.map_rotation_offset = rospy.get_param(
+            "map_rotation_offset", default=95)
+
+        self.transform_matrix = None
+        self.rotation_matrix = None
+        self.b_transform = False
+
+        self.listener = TransformListener()
 
         # Subscribers
-        rospy.Subscriber("cvkf_tracked_objects", DetectedObjectArray, self.detections_with_tracks)
+        rospy.Subscriber("/detection/objects",
+                         DetectedObjectArray, self.detections_with_tracks)
         rospy.Subscriber("current_pose", PoseStamped, self.curr_pose_callback)
 
     def detections_with_tracks(self, msg):
@@ -44,6 +57,27 @@ class TopDownRasterizer:
         ----------
         msg : DetectedObjectArray
         """
+
+        if msg.header.frame_id != "base_link":
+            self.b_transform = True
+
+        if self.b_transform:
+            try:
+                # Transform matrix from LiDAR to tracking frame
+                self.transform_matrix = self.listener.asMatrix(
+                    "base_link", msg.header)
+                # For extractng rotation only
+                _, rot = self.listener.lookupTransform("base_link", msg.header.frame_id,
+                                                       rospy.Time(0))
+                euler_rotation = euler_from_quaternion(rot)
+                # Taking only yaw rotation
+                self.rotation_matrix = self.euler_to_rotMat(
+                    0, 0, euler_rotation[2])
+            except (LookupException, ExtrapolationException) as e:
+                rospy.logwarn("Transform not found " + str(e))
+
+                if self.transform_matrix is None:
+                    return
 
         self.curr_tracks = []
 
@@ -96,21 +130,45 @@ class TopDownRasterizer:
                     curr_pose = self.n_track_history[keys_list[list_idx]][-1]["pose"]
 
                     for i in range(0, len(self.n_track_history[keys_list[list_idx]])):
+
+                        obj = [curr_pose.position.x,
+                               curr_pose.position.y, curr_pose.position.z]
+                        dim = [
+                            self.n_track_history[keys_list[list_idx]
+                                                 ][i]["dimensions"].x,
+                            self.n_track_history[keys_list[list_idx]
+                                                 ][i]["dimensions"].y,
+                            self.n_track_history[keys_list[list_idx]
+                                                 ][i]["dimensions"].z
+                        ]
+                        rotation = [curr_pose.orientation.x, curr_pose.orientation.y,
+                                    curr_pose.orientation.z, curr_pose.orientation.w]
+
+                        if self.b_transform:
+                            obj = np.dot(np.array([[obj[0], obj[1], obj[2], 1]]), self.transform_matrix.T)[
+                                :, :3][0]
+                            dim = np.dot(np.array([[dim[0], dim[1], dim[2]]]), self.rotation_matrix.T)[
+                                :, :3][0]
+                            curr_yaw = np.dot(np.array([euler_from_quaternion(
+                                rotation)]), self.rotation_matrix.T)[:, :3][0]
+                            rotation = quaternion_from_euler(
+                                curr_yaw[0], curr_yaw[1], curr_yaw[2])
+
                         points.append([
-                            curr_pose.position.x, 
-                            curr_pose.position.y,
-                            curr_pose.position.z
+                            obj[0],
+                            obj[1],
+                            obj[2]
                         ])
                         rotations.append([
-                            curr_pose.orientation.x, 
-                            curr_pose.orientation.y,
-                            curr_pose.orientation.z, 
-                            curr_pose.orientation.w
+                            rotation[0],
+                            rotation[1],
+                            rotation[2],
+                            rotation[3]
                         ])
                         dimensions.append([
-                            self.n_track_history[keys_list[list_idx]][i]["dimensions"].x, 
-                            self.n_track_history[keys_list[list_idx]][i]["dimensions"].y,
-                            self.n_track_history[keys_list[list_idx]][i]["dimensions"].z
+                            dim[0],
+                            dim[1],
+                            dim[2]
                         ])
 
             # Add ego vehicle too for testing
@@ -119,7 +177,8 @@ class TopDownRasterizer:
             dimensions.append([5.5, 2.0, 1.5])
 
             if len(points) > 1:
-                self.rasterize(obstacle_points=self.get_associated_polygon_points(points, rotations, dimensions))
+                self.rasterize(obstacle_points=self.get_associated_polygon_points(
+                    points, rotations, dimensions))
 
     def get_associated_polygon_points(self, points, rotations, dimensions):
         """ Create 4 polygon points for convex hull.
@@ -162,10 +221,14 @@ class TopDownRasterizer:
                 np.array([halved_dim[0], -halved_dim[1], halved_dim[2]]))
 
             centroids_and_poly_points[0].append(point)
-            centroids_and_poly_points[1].append([point[0] + rotated_vec_0[0], point[1] + rotated_vec_0[1], point[2]])
-            centroids_and_poly_points[2].append([point[0] + rotated_vec_1[0], point[1] + rotated_vec_1[1], point[2]])
-            centroids_and_poly_points[3].append([point[0] + rotated_vec_2[0], point[1] + rotated_vec_2[1], point[2]])
-            centroids_and_poly_points[4].append([point[0] + rotated_vec_3[0], point[1] + rotated_vec_3[1], point[2]])
+            centroids_and_poly_points[1].append(
+                [point[0] + rotated_vec_0[0], point[1] + rotated_vec_0[1], point[2]])
+            centroids_and_poly_points[2].append(
+                [point[0] + rotated_vec_1[0], point[1] + rotated_vec_1[1], point[2]])
+            centroids_and_poly_points[3].append(
+                [point[0] + rotated_vec_2[0], point[1] + rotated_vec_2[1], point[2]])
+            centroids_and_poly_points[4].append(
+                [point[0] + rotated_vec_3[0], point[1] + rotated_vec_3[1], point[2]])
 
         return np.array(centroids_and_poly_points)
 
@@ -212,32 +275,35 @@ class TopDownRasterizer:
         res : float
             Meters per pixel resolution
         """
-        
+
         # Filter obstacles outside side & forward range
         x_filtered = np.logical_and((obstacle_points[0][:, 0] > fwd_range[0]),
                                     (obstacle_points[0][:, 0] < fwd_range[1]))
         y_filtered = np.logical_and((obstacle_points[0][:, 1] > -side_range[1]),
                                     (obstacle_points[0][:, 1] < -side_range[0]))
         # TODO apply filter maybe later
-        obstacle_filter = np.argwhere(np.logical_and(x_filtered, y_filtered)).flatten()
+        obstacle_filter = np.argwhere(
+            np.logical_and(x_filtered, y_filtered)).flatten()
 
         # 3D map frame to top-down image transform matrix
         # Here x = -y, y=-x, and coloumn 2 is use to translate points to shift image origin
         trans_3d_to_img = np.array([
             [0, -1 / res, -math.floor(side_range[0] / res)],
-            [-1 / res, 0, -math.floor(fwd_range[0] / res)], 
+            [-1 / res, 0, -math.floor(fwd_range[0] / res)],
             [0, 0, 1]
         ])
 
         obstacle_points_img = [[], [], [], [], []]
         for idx, obstacle_point_arr in enumerate(obstacle_points):
-            
+
             # Transform 3D centroids and polygon points to top-down image
-            points_img = np.concatenate([obstacle_point_arr[:, :2], np.ones((obstacle_point_arr[:, :2].shape[0], 1))], axis=1)
-            points_img = np.dot(points_img, trans_3d_to_img.T).astype(np.int32)[:, :2]
+            points_img = np.concatenate([obstacle_point_arr[:, :2], np.ones(
+                (obstacle_point_arr[:, :2].shape[0], 1))], axis=1)
+            points_img = np.dot(
+                points_img, trans_3d_to_img.T).astype(np.int32)[:, :2]
 
             obstacle_points_img[idx] = points_img
-        
+
         # Get shape of image with
         x_max = int((side_range[1] - side_range[0]) / res)
         y_max = int((fwd_range[1] - fwd_range[0]) / res)
@@ -251,22 +317,22 @@ class TopDownRasterizer:
         # Convert from numpy array to a PIL image
         im = Image.fromarray(im)
 
-
     def merge_vector_map(self, occupancy_img):
 
         quaternion = (self.curr_ego_pose.pose.orientation.x,
                       self.curr_ego_pose.pose.orientation.y,
                       self.curr_ego_pose.pose.orientation.z,
                       self.curr_ego_pose.pose.orientation.w)
-        
+
+        # Vector map has some offset in rotation w.r.t car's frame,
+        # We subtract it to align vectormap and dynamic obstacles
         yaw_rotation = math.degrees(euler_from_quaternion(quaternion)[2])
+        yaw_rotation -= self.map_rotation_offset
 
         ego_index = [
             int(math.ceil(abs(self.map_tl_x - self.curr_ego_pose.pose.position.x) / 0.2) - 2),
             int(math.ceil(abs(self.map_tl_y - self.curr_ego_pose.pose.position.y) / 0.2) + 2)
         ]
-
-        yaw_rotation -= 88
 
         cropped_map = self.lane_map[ego_index[1] - 500:ego_index[1] + 500,
                                     ego_index[0] - 500:ego_index[0] + 500]
